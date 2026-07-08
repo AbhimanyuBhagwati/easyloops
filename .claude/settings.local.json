@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ollama list *)",
+      "Bash(sysctl hw.memsize hw.ncpu machdep.cpu.brand_string)"
+    ]
+  }
+}

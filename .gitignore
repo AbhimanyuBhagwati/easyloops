@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.DS_Store
+# per-workspace agent state
+.easyloops/
+.loopeng/
+# local demo output workspaces
+examples/

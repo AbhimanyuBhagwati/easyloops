@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "easyloops"
+version = "0.2.0"
+description = "The agent harness for whatever open model you have — plan, loop, verify, ship"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = []
+keywords = ["agents", "llm", "ollama", "local-models", "harness", "openai-compatible"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+]
+
+[project.urls]
+Homepage = "https://github.com/abhimanyubhagwati/easyloops"
+
+[project.scripts]
+easyloops = "easyloops.cli:main"
+
+[tool.setuptools]
+packages = ["easyloops"]
