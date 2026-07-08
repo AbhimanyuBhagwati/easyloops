@@ -110,24 +110,42 @@ class ToolBox:
             raise ValueError(f"Path escapes workspace: {path}")
         return p
 
+    # Hard limits so a giant or hostile workspace (symlink cycles, recursive
+    # copies, $HOME as workspace) can never hang or crash the walker.
+    WALK_MAX_FILES = 2000
+    WALK_MAX_DEPTH = 12
+
     def _walk(self):
-        stack = [self.workspace]
+        stack = [(self.workspace, 0)]
+        yielded = 0
         while stack:
-            d = stack.pop()
+            d, depth = stack.pop()
             try:
                 entries = sorted(d.iterdir())
             except OSError:
                 continue
             for e in entries:
-                if e.is_dir():
-                    if e.name not in IGNORED_DIRS:
-                        stack.append(e)
-                elif e.is_file():
-                    yield e
+                try:
+                    if e.is_symlink():
+                        continue  # never follow symlinks: cycles make paths explode
+                    if e.is_dir():
+                        if e.name not in IGNORED_DIRS and depth < self.WALK_MAX_DEPTH:
+                            stack.append((e, depth + 1))
+                    elif e.is_file():
+                        yielded += 1
+                        yield e
+                        if yielded >= self.WALK_MAX_FILES:
+                            return
+                except OSError:
+                    continue  # unstatable entry (too-long path, perms): skip it
 
     def list_files(self) -> str:
-        rels = [str(f.relative_to(self.workspace)) for f in self._walk()]
-        rels = rels[:200]
+        rels = []
+        for f in self._walk():
+            rels.append(str(f.relative_to(self.workspace)))
+            if len(rels) >= 200:
+                rels.append("... (listing truncated at 200 files)")
+                break
         return "\n".join(rels) if rels else "(workspace is empty)"
 
     def read_file(self, path: str) -> str:

@@ -59,6 +59,12 @@ def _setup(args):
     return workspace, load_config(workspace, overrides)
 
 
+def _too_broad(workspace: Path) -> bool:
+    """Home or filesystem root is not a workspace — agents get write access
+    to everything under it, and walking it is slow and hazardous."""
+    return workspace in (Path.home(), Path(workspace.anchor))
+
+
 def _bench(args, ui) -> int:
     from .bench import REGISTRY, format_report, run_bench
 
@@ -115,6 +121,17 @@ def _plan_and_maybe_run(goal: str, workspace: Path, cfg, ui, do_run: bool, confi
 def interactive(args) -> int:
     ui = make_ui()
     workspace, cfg = _setup(args)
+    if _too_broad(workspace):
+        ui.info("You're in your home directory — agents get file access to their whole")
+        ui.info("workspace, so let's give them a dedicated folder instead.")
+        try:
+            raw = input("Workspace folder [~/easyloops-workspace]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 130
+        workspace = Path(raw or "~/easyloops-workspace").expanduser().resolve()
+        workspace.mkdir(parents=True, exist_ok=True)
+        cfg = load_config(workspace, {k: getattr(args, k, None) for k in OVERRIDE_KEYS})
     ui.banner(__version__, cfg)
     try:
         models = make_client(cfg).list_models()
@@ -175,6 +192,10 @@ def interactive(args) -> int:
             ui.error(str(e))
         except KeyboardInterrupt:
             ui.info("\ninterrupted — state saved; /resume to continue")
+        except Exception as e:  # never let one bad run kill the session
+            ui.error(f"unexpected error ({type(e).__name__}): {e}")
+            ui.info("state is saved — /resume to continue, or report this at "
+                    "https://github.com/AbhimanyuBhagwati/easyloops/issues")
 
 
 def main(argv=None) -> int:
@@ -218,6 +239,10 @@ def main(argv=None) -> int:
             return 0
 
         workspace, cfg = _setup(args)
+        if _too_broad(workspace):
+            ui.error(f"refusing to use {workspace} as the agent workspace")
+            ui.info("cd into a project folder, or pass -w some/dir")
+            return 1
         if args.cmd in ("plan", "run"):
             return _plan_and_maybe_run(
                 args.goal, workspace, cfg, ui,

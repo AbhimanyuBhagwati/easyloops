@@ -29,6 +29,20 @@ try:
 except ValueError:
     pass
 
+# --- walker survives hostile filesystems (symlink cycles, deep nesting) ----
+hostile = Path(tempfile.mkdtemp(prefix="easyloops-hostile-"))
+(hostile / "real.py").write_text("ok\n")
+(hostile / "loop").mkdir()
+(hostile / "loop" / "loop").symlink_to(hostile / "loop")  # self-referencing cycle
+deep = hostile
+for _ in range(40):  # way past WALK_MAX_DEPTH
+    deep = deep / "deep"
+    deep.mkdir()
+(deep / "buried.py").write_text("too deep\n")
+listing = ToolBox(hostile).list_files()
+assert "real.py" in listing
+assert "buried.py" not in listing  # depth cap engaged, no crash
+
 # --- worker snapshot/rollback --------------------------------------------
 snap = _snapshot(tb)
 tb.write_file("pkg/a.py", "broken")
