@@ -1,0 +1,218 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+
+\newcommand{\el}{\texttt{easyloops}}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{\textbf{Loop Engineering: World-Class Results from Small Local Models\\
+via Verification-Anchored Agent Loops}}
+\author{Abhimanyu Bhagwati\\
+\small\href{https://github.com/AbhimanyuBhagwati/easyloops}{github.com/AbhimanyuBhagwati/easyloops}
+\quad\href{https://pypi.org/project/easyloops/}{pypi.org/project/easyloops}}
+\date{July 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Frontier coding agents assume a frontier model. We ask the opposite question: how far can
+\emph{small, freely available local models} (2--30B parameters) be pushed by engineering the
+\emph{loop} around them rather than scaling the model inside them? We introduce
+\textbf{loop engineering}: the discipline of designing verification, context hygiene, recovery
+policy, and capability measurement so that unlimited free local inference converts into real
+task quality. We present \el{}, an open-source, zero-dependency harness implementing these
+principles, and report measurements across six local models on a consumer laptop. Our central
+findings: (i)~a 2.5\,GB model (qwen3:4b-instruct) matches models an order of magnitude larger
+on tool-driven code repair when anchored to an external verifier, while being the fastest
+worker at 151 tokens/s; (ii)~capability must be measured, not assumed---one popular 8B model
+proved entirely incapable of tool use under its default runtime, a failure invisible until
+probed; and (iii)~the practical quality ceiling of an agent loop is set by its verifier, not
+its model: we document failure modes (self-satisfying tests, stale bytecode caches) in which a
+loop reports success while doing nothing, and the mechanical defenses that close them.
+\end{abstract}
+
+\section{Introduction}
+
+Agent harnesses such as Claude Code demonstrate that a language model equipped with tools and
+an execution loop can complete substantial software tasks. These systems, however, presuppose a
+highly capable hosted model. Meanwhile, millions of practitioners run small open-weight models
+locally---on laptops, without per-token cost, without rate limits, and without sending code to
+third parties.
+
+Small models fail differently from large ones. They cannot hold a large plan in context, they
+degrade quickly when their context is polluted by their own failed attempts, and their
+capabilities vary wildly and undocumented across sizes, families, and runtimes. Naively placing
+a small model inside a large-model harness therefore fails. Our thesis is that these failures
+are properties of the \emph{loop}, not only of the model, and that they are engineerable:
+
+\begin{quote}
+\emph{A small model looping on its own opinion of its output plateaus. A small model looping
+against an objective external signal climbs.}
+\end{quote}
+
+We call the resulting discipline \textbf{loop engineering} and reduce it to four practices:
+verifier design (\S\ref{sec:verify}), capability measurement (\S\ref{sec:bench}), context
+hygiene and recovery policy (\S\ref{sec:recovery}), and skills-as-procedure
+(\S\ref{sec:skills}). \el{} packages these practices behind a single interactive CLI.
+
+\section{Design}
+
+\subsection{Verification is the ceiling}\label{sec:verify}
+
+Every task produced by the \el{} planner must carry a \code{verify\_cmd}: a shell command that
+exits~0 only if the task succeeded (typically running a test file). The harness---never the
+model---executes this command to decide pass/fail. Free local compute then behaves like an
+optimizer against an objective function: retries are cheap, and each retry receives the failure
+output as signal.
+
+The corollary is that verifier defects, not model defects, bound quality. We observed a 4B
+worker produce tests that \emph{printed} ``Test failed'' yet exited~0---a verifier that could
+never fail, satisfied on the first try. Because a passing verifier exerts no improvement
+pressure, the loop happily accepted it. Defenses must be mechanical: \el{} rejects inline
+\code{python -c} verifiers at plan validation, ships an auto-attached skill forbidding
+print-style tests, and we validate generated tests by \emph{mutation}: deliberately breaking
+the implementation and requiring the tests to go red.
+
+\subsection{Measure capability; never assume it}\label{sec:bench}
+
+\code{easyloops bench} probes every installed model with four scored tasks: (1)~\textbf{tools}:
+drive a write-file/finish tool protocol; (2)~\textbf{json}: emit a schema-valid task plan;
+(3)~\textbf{repair}: fix deliberately buggy code until real tests pass, inside the production
+worker loop, with an anti-cheat hash proving the tests were not edited; (4)~\textbf{follow}: an
+exact-output instruction probe. Speed and model size are recorded alongside.
+
+Routing is derived from the data by three rules reflecting how each role is used:
+the \emph{largest} qualified model plans (planning runs once per goal and gates everything
+downstream); the \emph{fastest} top-repairing model works (workers run constantly and
+verification catches their mistakes); the \emph{strongest} tool-capable model takes the final
+attempt of stuck tasks.
+
+\subsection{Context hygiene and recovery policy}\label{sec:recovery}
+
+Each task attempt starts from \emph{fresh} context: the self-contained task description,
+summaries of dependency tasks, a workspace listing, and only the \emph{tail of the previous
+failure}---never the prior transcript. Durable state lives on disk in a resumable ledger, not
+in any context window. Attempts follow a diversity-then-capability schedule: attempt~1 samples
+conservatively (temperature 0.2); attempt~2 repairs in place with the error as input (0.5);
+the final attempt \textbf{rolls the workspace back to a clean snapshot} and resamples hot (0.8)
+on the escalation model---for small models, a clean retry empirically beats digging deeper into
+a broken repair. A task that exhausts its attempts is returned to the planner with its failure
+output and \emph{split} into smaller subtasks, the dependency DAG rewiring automatically.
+
+\subsection{Skills as written procedure}\label{sec:skills}
+
+Small models benefit disproportionately from explicit procedure. \el{} skills are Markdown
+files carrying a description and trigger keywords; they attach to tasks either by planner
+choice or---because planners proved unreliable at opting in---mechanically, by keyword match
+against the task text. Their bodies are injected into the worker's system prompt.
+
+\section{Evaluation}
+
+\subsection{Capability probes}
+
+Table~\ref{tab:bench} reports bench results on an Apple M3~Max (36\,GB unified memory,
+Ollama 0.30.5). Two results stand out. First, \textbf{qwen3:4b-instruct}---a 2.5\,GB
+model---achieves perfect scores on every probe while being the fastest model measured; it
+repaired the buggy module in 5.3\,s, faster than models $7\times$ its size. Second,
+\textbf{llama3:8b scores zero on tool use}: its runtime rejects tool schemas outright. A user
+pairing that model with any agent harness would fail opaquely mid-task; the probe surfaces the
+incompatibility in seconds.
+
+\begin{table}[h]
+\centering
+\caption{Capability probes across six local models (scores in $[0,1]$).}
+\label{tab:bench}
+\begin{tabular}{lccccr}
+\toprule
+Model & Tools & Plan JSON & Repair & Follow & tok/s \\
+\midrule
+qwen3:4b-instruct  & 1.0 & 1.0 & 1.0 (5.3\,s)  & 1.0 & 151 \\
+qwen3:30b-instruct & 1.0 & 1.0 & 1.0 (7.2\,s)  & 1.0 & 128 \\
+gemma4             & 1.0 & 1.0 & 1.0 (17.2\,s) & 1.0 & 103 \\
+qwen2.5:14b        & 1.0 & 1.0 & 1.0 (26.6\,s) & 1.0 & 54  \\
+qwen2.5:7b         & 1.0 & 1.0 & 0.7 (2 attempts) & 1.0 & 103 \\
+llama3:8b          & \textbf{0.0} & 1.0 & 0.0 & 1.0 & 94 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Derived routing: planner and escalation \code{qwen3:30b-instruct}; worker and utility
+\code{qwen3:4b-instruct}.
+
+\subsection{Case studies}
+
+\textbf{End-to-end builds.} Given natural-language goals (a JSON-backed expense tracker with an
+\code{argparse} CLI and tests; a timestamped notes module with tests), the harness planned 2--5
+task DAGs and completed them with the 4B worker, most tasks passing on the first attempt. All
+artifacts were verified independently of the harness's own report.
+
+\textbf{The full safety net, organically.} In the notes-module build, the 4B worker failed the
+test-writing task twice; the harness rolled the workspace back to its snapshot, escalated the
+final attempt to the 30B at temperature~0.8, and passed. The resulting test suite survived
+mutation testing (three deliberate implementation bugs, all caught).
+
+\textbf{Verifier blindness and its repair.} The expense-tracker run initially yielded the
+print-style non-failing tests of \S\ref{sec:verify}. Re-routing only the test-writing task to
+the 30B---with the anchor file removed and the anti-pattern skill attached---produced 25 real
+assertions; mutation testing confirmed them. The general lesson: tasks whose output \emph{is}
+the verifier are precisely the tasks that need the strongest model.
+
+\textbf{A systems pitfall: stale bytecode.} During evaluation we observed verify commands
+executing \emph{stale code}: CPython invalidates cached bytecode by (mtime-seconds, size), so a
+same-size rewrite within one second---routine in fast agent loops---silently reuses the old
+compile. On macOS the system Python further relocates caches to a hidden per-user directory.
+\el{} now assigns each workspace a private \code{PYTHONPYCACHEPREFIX}, wiped before every
+command, making verify results reflect the files actually on disk. We flag this as a hazard for
+any agent framework that executes rapidly rewritten Python.
+
+\subsection{Robustness}
+
+Real home directories are hostile: we encountered a symlink cycle (created by an unrelated
+tool) that drove a naive directory walker past the OS path-length limit and crashed the
+session. The \el{} walker now refuses symlinks, caps depth and file count, and treats
+unstatable entries as skippable; the interactive CLI additionally refuses to adopt \code{\$HOME}
+or a filesystem root as an agent workspace. Both behaviors are regression-tested, including
+against the original pathological directory.
+
+\section{Limitations}
+
+The approach inherits the limits of its verifiers: tasks with machine-checkable success
+(code-with-tests, data transformation, format conversion) climb under iteration; open-ended
+taste tasks do not, because nothing objective tells the loop it is wrong. Our probes saturate
+on capable models---they separate \emph{can} from \emph{cannot} sharply but not \emph{good}
+from \emph{great}. The workspace jail is a convention, not a sandbox. Single-machine memory
+(one resident large model) serializes execution; we do not yet exploit parallel sampling.
+
+\section{Future Work}
+
+\textbf{Managed-cloud backends.} \el{} speaks two protocols: native Ollama and OpenAI-compatible
+chat completions. Because AWS Bedrock and Google Vertex~AI both expose OpenAI-compatible
+endpoints, they are reachable today via \code{-{}-backend openai}; first-class support requires
+native credential handling (AWS SigV4/IAM; Google OAuth tokens with hourly expiry) and model
+discovery, which we plan as dedicated backend adapters. The interesting research question is
+economic: with a metered cloud model in the escalation slot and free local models in the worker
+slot, the routing rules of \S\ref{sec:bench} become a cost optimizer---spend cents only where
+verification proves the free tier insufficient.
+
+\textbf{Also planned:} best-of-$N$ verified sampling under runtime parallelism; embedding-based
+file retrieval for large workspaces; a built-in mutation check after every test-writing task;
+harder, discriminative probes; and task-type routing (quality-sensitive tasks straight to the
+strongest model).
+
+\section{Conclusion}
+
+Loop engineering reframes the small-model question. The scarce resource is not intelligence per
+token but \emph{verifiable feedback per attempt}. Given an objective verifier, honest
+measurement of what each local model can do, ruthless context hygiene, and a recovery ladder of
+rollback, escalation, and re-planning, a 2.5\,GB model on a laptop does real software work---and
+knows when to hand the keyboard to a bigger sibling. All code, benchmarks, and the harness
+itself are open source: \code{pip install easyloops}.
+
+\end{document}
