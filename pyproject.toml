@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "easyloops"
-version = "0.2.1"
+version = "0.2.2"
 description = "The agent harness for whatever open model you have — plan, loop, verify, ship"
 readme = "README.md"
 license = { text = "MIT" }

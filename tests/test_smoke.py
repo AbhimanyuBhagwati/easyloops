@@ -87,6 +87,32 @@ assert conv[1]["tool_calls"][0]["id"] == "call_0"
 assert isinstance(conv[1]["tool_calls"][0]["function"]["arguments"], str)
 assert conv[2]["tool_call_id"] == "call_0"
 
+# --- routing survives a machine with completely different models -----------
+from easyloops.cli import _ensure_models, _fallback_routing, _installed_ok  # noqa: E402
+from easyloops.ui import SilentUI as _S  # noqa: E402
+
+assert _installed_ok("mistral:7b", {"mistral:7b"})
+assert _installed_ok("mistral", {"mistral:latest"})
+assert _installed_ok("mistral", {"mistral:7b"})          # bare name, one base match
+assert not _installed_ok("qwen3:30b-instruct", {"mistral:7b"})
+
+stranger = ["mistral:7b", "phi4:14b", "nomic-embed-text"]
+sizes = {"mistral:7b": 4.4, "phi4:14b": 9.1, "nomic-embed-text": 0.3}
+fb = _fallback_routing(stranger, sizes)
+assert fb["planner_model"] == "phi4:14b" and fb["utility_model"] == "mistral:7b"
+assert _fallback_routing(["nomic-embed-text"], {}) == {}  # nothing usable
+
+cfg_stranger = Config()  # our qwen defaults — none installed on this "machine"
+_ensure_models(cfg_stranger, stranger, sizes, _S())
+assert cfg_stranger.planner_model == "phi4:14b"
+assert cfg_stranger.worker_model == "phi4:14b"
+assert cfg_stranger.escalation_model == ""               # cleared, not broken
+
+cfg_match = Config(planner_model="mistral:7b", worker_model="mistral:7b",
+                   utility_model="mistral:7b", escalation_model="")
+_ensure_models(cfg_match, stranger, sizes, _S())
+assert cfg_match.planner_model == "mistral:7b"           # untouched when valid
+
 # --- ui: all variants render without crashing ------------------------------
 for ui_cls in (PlainUI, FancyUI, SilentUI):
     ui = ui_cls()

@@ -65,6 +65,65 @@ def _too_broad(workspace: Path) -> bool:
     return workspace in (Path.home(), Path(workspace.anchor))
 
 
+SKIP_MODELS = ("embed", "llava", "nomic")
+
+
+def _installed_ok(name: str, installed: set) -> bool:
+    """Does `name` resolve to an installed model? Mirrors Ollama's tag rules:
+    exact tag, name:latest, or bare name matching exactly one installed base."""
+    if not name or name in installed or f"{name}:latest" in installed:
+        return True
+    return ":" not in name and any(i.split(":")[0] == name for i in installed)
+
+
+def _fallback_routing(installed: list, sizes: dict) -> dict:
+    """Routing when the configured models aren't on this server and no bench
+    has run: biggest chat model everywhere (capability unknown — prefer
+    correctness over speed), smallest as utility. `bench` replaces this."""
+    pool = [m for m in installed if not any(s in m for s in SKIP_MODELS)]
+    if not pool:
+        return {}
+    biggest = max(pool, key=lambda m: sizes.get(m, 0))
+    smallest = min(pool, key=lambda m: sizes.get(m, float("inf")))
+    return {"planner_model": biggest, "worker_model": biggest,
+            "utility_model": smallest, "escalation_model": ""}
+
+
+def _ensure_models(cfg, installed: list, sizes: dict, ui) -> None:
+    """If configured models don't exist on this server (fresh install, another
+    machine's registry, deleted model), fall back to what IS installed."""
+    inst = set(installed)
+    missing = [m for m in (cfg.planner_model, cfg.worker_model, cfg.utility_model)
+               if not _installed_ok(m, inst)]
+    if cfg.escalation_model and not _installed_ok(cfg.escalation_model, inst):
+        cfg.escalation_model = ""
+    if not missing:
+        return
+    fb = _fallback_routing(installed, sizes)
+    if not fb:
+        raise BackendError(
+            "no usable chat models installed — pull one first (e.g. `ollama pull qwen3:4b-instruct`)"
+        )
+    ui.info(f"configured models not on this server: {', '.join(sorted(set(missing)))}")
+    ui.info(f"falling back to {fb['planner_model']} for now — run `easyloops bench` "
+            "to measure your models and route properly")
+    for key in ("planner_model", "worker_model", "utility_model"):
+        if not _installed_ok(getattr(cfg, key), inst):
+            setattr(cfg, key, fb[key])
+
+
+def _connect_and_resolve(cfg, ui):
+    """One connectivity check that also repairs routing for this server."""
+    client = make_client(cfg)
+    installed = client.list_models()
+    try:
+        sizes = client.model_sizes()
+    except BackendError:
+        sizes = {}
+    _ensure_models(cfg, installed, sizes, ui)
+    return installed
+
+
 def _bench(args, ui) -> int:
     from .bench import REGISTRY, format_report, run_bench
 
@@ -73,8 +132,7 @@ def _bench(args, ui) -> int:
     if getattr(args, "models", None):
         models = [m.strip() for m in args.models.split(",") if m.strip()]
     else:
-        skip = ("embed", "llava", "nomic")
-        models = [m for m in client.list_models() if not any(s in m for s in skip)]
+        models = [m for m in client.list_models() if not any(s in m for s in SKIP_MODELS)]
         ui.info(f"Benching all {len(models)} eligible models (narrow with --models a,b,c)")
     report = run_bench(models, cfg, log=ui.note)
     print("\n" + format_report(report))
@@ -134,10 +192,10 @@ def interactive(args) -> int:
         cfg = load_config(workspace, {k: getattr(args, k, None) for k in OVERRIDE_KEYS})
     ui.banner(__version__, cfg)
     try:
-        models = make_client(cfg).list_models()
+        models = _connect_and_resolve(cfg, ui)
         ui.info(f"connected · {len(models)} models available · workspace {workspace}")
-    except BackendError:
-        ui.error("no model server reachable")
+    except BackendError as e:
+        ui.error(str(e))
         print(CONNECT_HINTS)
         return 1
     if not registry_path().exists():
@@ -243,6 +301,7 @@ def main(argv=None) -> int:
             ui.error(f"refusing to use {workspace} as the agent workspace")
             ui.info("cd into a project folder, or pass -w some/dir")
             return 1
+        _connect_and_resolve(cfg, ui)
         if args.cmd in ("plan", "run"):
             return _plan_and_maybe_run(
                 args.goal, workspace, cfg, ui,
